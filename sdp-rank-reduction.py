@@ -5,13 +5,29 @@ Created on Thu Jun  6 15:45:03 2019
 
 @author: arcturus
 """
-
+#%% NOTES: 
+# TBD 1: test rank reduction with a random sdp (start w/ a matrix 
+# and generate constraints based on that.)
+# NOTE - This is awful- the solver returns a matrix that has a TINY negative eigenvalue!?
+# NOTE 2 - The rank reducer requires Cholesky, whch requires X to be PD, not PSD. Do I just add an eps perturbation?
 #%% Rank reduction alg
 import numpy as np
 import scipy as sp
 import cvxpy as cp
-import mybasicsmodule
 
+#%% Generate a random symmetric matrix.
+def generate_rndsymm(n):
+    C = np.random.rand(n, n)
+    C = (C + np.transpose(C))*0.5
+    return C
+
+#%% Generate a random PSD matrix; the PSDness follows from Theorem 6.1.10 of HJ
+# (diagonal dominance + diagonals non-negative + symmetry).
+def generate_psd(s):
+    A = generate_rndsymm(s)
+    Apsd = A + s*np.eye(s)
+    return Apsd
+    
 #%% Construct the linear operator Av
 def create_Av(A, V):
     #inputs: 
@@ -23,8 +39,8 @@ def create_Av(A, V):
     # first computing all the m products V^T A_i V (an r by r matrix),
     # then vectorizing each of them, 
     # and vertically stacking the row vectors. 
-    [r, n] = A.shape()
-    m = r/n
+    [r, n] = A.shape
+    m = r//n
     
     AV = A.dot(V) #mn by r matrix 
     AVs = np.vsplit(AV, m) #list of m arrays of size n by r
@@ -44,6 +60,7 @@ def create_nullspace_Av(Av):
     # in the nullspace of Av; write this as a matrix (row-wise).
     
     delta = sp.linalg.null_space(Av)
+    print("Length of delta is ",np.size(delta))
     r = np.sqrt(np.size(delta))
     Delta = np.reshape(delta, (r, r))
     return Delta
@@ -77,12 +94,79 @@ def rank_reduction(X, A):
     return X
 
 #%% 
+def sdp(_test_): 
+    n = _test_.num_points
+    m = _test_.num_constraints
+    cons = _test_.constraints
+    obj = _test_.objective
+    
+    X = cp.Variable((n, n), symmetric = True)
+    constraints = [X>>0]
+    constraints+= [cp.trace(cons.A[i]@X) == cons.b[i] for i in range(m)]
+    prob = cp.Problem(cp.Minimize(cp.trace(obj@X)), constraints)
+    prob.solve()
+    return prob, X
+
+#%% 
+class Constraints:
+    def __init__(self, A, b):
+        self.A = A
+        self.b = b
+
+#%% 
+class TestSDP:
+    def __init__(self, n, m):
+        self.num_points = n
+        self.num_constraints = m
+        self.objective = self.generate_obj()
+        self.constraints, self.one_feasible_point = self.generate_constraints()
+    
+    def generate_obj(self):
+        n = self.num_points
+        C = generate_psd(n) # so that the obj doesn't become -inf when minimizing
+        return C
+    
+    def generate_constraints(self):
+        n = self.num_points
+        m = self.num_constraints
+        
+        A = []
+        for i in range(m):
+            A.append(generate_rndsymm(n))
+        #A_cat = np.vstack(A[i] for i in range(m))  
+        
+        X_feas = generate_psd(n) 
+        
+        b = []
+        for i in range(m):
+            b.append(np.trace(A[i].dot(X_feas)))
+        #b_cat = np.vstack(b[i] for i in range(m))
+        
+        constraints = Constraints(A, b)
+        return constraints, X_feas
+    
+        def check_feasibility(self, X):
+            #TBD
+            return
+#%% 
+def check_pd(X):
+    lambda_min = np.min(np.linalg.eigvals(X))
+    eps = 1e-06
+    
+    if(lambda_min > 0):
+        return X
+    else:
+        return X + np.eye(X.shape[0])*(np.abs(lambda_min) + eps)
+
+#%%
 if __name__ == '__main__':
-        C = mybasicsmodule.generate_psd(5)
-        X = cp.Variable((5, 5), symmetric = True)
-        constraints = [X >> 0]
-        constraints+= [cp.trace(X)==1]
-        prob = cp.Problem(cp.Maximize(cp.trace(C@X)), constraints)
-        prob.solve()
-        print("The problem\'s optimal value is ", prob.value)
-        print("The optimizer is ", X.value)
+    n = 5
+    m = 3
+    _testsdp_ = TestSDP(n, m)
+    _testsdpsol_, _testsdpX_ = sdp(_testsdp_)
+    A_cat = np.vstack(_testsdp_.constraints.A[i] for i in range(m))
+    pdfied_X = check_pd(_testsdpX_.value)
+    #_testsdp_.check_feasibility(pdfied_X)
+    rank_reduction(pdfied_X, A_cat)
+    
+                
