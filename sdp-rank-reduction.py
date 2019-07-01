@@ -43,7 +43,6 @@ def create_Av(A, V):
     # and vertically stacking the row vectors. 
     [mn, n] = A.shape
     m = mn//n #this SHOULD be an integer, since the A is created by stacking matrices on top of each other
-    print("The value of m is", m)
     
     AV = A.dot(V) #mn by r matrix 
     AVs = np.vsplit(AV, m) #list of m arrays of size n by r
@@ -53,21 +52,57 @@ def create_Av(A, V):
     VtAV_listvec = [VtAV_listmat[_].flatten() for _ in range(m)] #r^2 each
     Av = np.asarray(VtAV_listvec) #m x r^2 matrix
     return Av
+#%% 
+def create_sym_map_mat(r2):
+    #input: r^2
+    # output: a matrix of all zeroes with ones in specific locations
+    # size r(r+1)/2 x r^2. 
+    r = np.int(np.sqrt(r2))
+    numrows = np.int(r*(r+1)/2)
+    numcols = r2
+    M = np.zeros((numrows, numcols))
+    
+    #I simply don't know how to do this pythonically, so here's my awful C-ish for loop. 
+    mat_dict = {} 
+    col_tuples = [divmod(i, r) for i in range(numcols)] 
+    num_repeats = 0
+    for i in range(numcols):
+        if(col_tuples[i][0] <= col_tuples[i][1]):
+            row_pos = (col_tuples[i][0])*r + col_tuples[i][1] - num_repeats
+            M[row_pos][i] = 1
+            mat_dict[col_tuples[i]] = row_pos
+        else:
+            num_repeats+= 1 
+            row_pos = mat_dict[(col_tuples[i][1], col_tuples[i][0])]
+            M[row_pos][i] = 1
+    
+    return M
 #%%       
-def create_nullspace_Av(Av):
+def create_nullspace_AvCv(Av):
     #inputs: 
     # [Av:Cv] = m+1 by r^2 matrix, the i'th row being vec(V' A_i V), 
     # and the last one being vec(V' C V)
     
     #outputs:
     # Delta = r by r matrix obtained as follows: find a vector delta 
-    # in the nullspace of [Av; Cv]; write this as a matrix (row-wise).
+    # in the nullspace of [Av; Cv], where delta satisfies the  
+    # condition that Delta is symmetric 
     
-    delta_all = sp.linalg.null_space(Av)
-    delta = delta_all[:, 0]
-    print("Length of delta is ",np.size(delta)) # i think we SHOULD get a perfect  square here 
-    r = np.int(np.sqrt(np.size(delta)))
-    print("The dimension of the square matrix Delta will be ", r) 
+    # First, we reduce the dimension of our input matrix of which 
+    # we intend to compute the nullspace. This dimension reduction 
+    # ensures that the nullspace matrix we get is symmetric. 
+    [mp1, r2] = Av.shape
+    M = create_sym_map_mat(r2)
+    compressed_Av = Av.dot(M.transpose()) #m+1 x r(r+1)/2
+    
+    #We then find A VECTOR in the nullspace of THIS compressed linear operator
+    compressed_delta = sp.linalg.null_space(compressed_Av) #length r(r+1)/2
+    compressed_delta_one = compressed_delta[:, 0]
+    #Then we "de-compress" it
+    delta = (np.transpose(M)).dot(compressed_delta_one) #r^2 
+    
+    # And finally, we reshape it into a matrix
+    r = np.int(np.sqrt(r2))
     Delta = np.reshape(delta, (r, r))
     return Delta
 
@@ -78,7 +113,7 @@ def create_Cv(C, V):
     # V = n by r matrix
 
     #outputs: 
-    # Cv = r^2 length vector obtained by ...
+    # Cv = 1 x r^2 matrix obtained by ...
     # computing the product V^T C V (an r by r matrix),
     # then vectorizing it.  
     CV = C.dot(V) #mn by r matrix 
@@ -102,28 +137,36 @@ def rank_reduction(X, A, C):
     
     #outputs:
     # X = n by n matrix; solution to the SDP that has a rank <= that of the input
-    
-    # cholesky factorize X to get V
+
+    # Cholesky factorize X to get V
     V = np.linalg.cholesky(X)
-    r = V.shape[0]
+    
+    # Construct some constants
+    r = V.shape[1]
     I_r = np.eye(r)
-    Av = create_Av(A, V) 
-    Cv = create_Cv(C, V)
-    AvCv = np.vstack(Av, Cv)
+    
+    VtAV_vecmat = create_Av(A, V) #m x r^2
+    VtCV_vec = create_Cv(C, V) #1 x r^2
+    calAC = np.vstack((VtAV_vecmat, VtCV_vec)) #following monograph notation 
     
     count = 0
-    
-    Delta = create_nullspace_Av(AvCv)
-    while ( Delta.size != 0 and count < 100):
+    # TODO error message if this isn't a valid op (#rows > #cols)
+    Delta = create_nullspace_AvCv(calAC)
+    while ( Delta.size != 0 and count < 100 and check_pd(X)!=0):
         # Find lambda_1 which is the max eigval of Delta
         lambda_1 = np.max(np.abs(np.linalg.eigvals(Delta)))
         # Choose alpha according to formula
         alpha = -1/lambda_1
         # Construct X = V(I + alpha * Delta)V'
-        temp = (I_r + alpha*Delta).dot(V.transpose())
-        X = V.dot(temp)
-        # find Delta in nullspace(A_v)
-        Delta = create_nullspace_Av(Av)
+        X = V.dot((I_r + alpha*Delta).dot(V.transpose()))
+        # Compute Cholesky
+        V = np.linalg.cholesky(X)
+        # Create the matrices Vt*A[i]*V and Vt*C*V and vectorize and stack
+        VtAV_vecmat = create_Av(A, V) #m x r^2
+        VtCV_vec = create_Cv(C, V) #1 x r^2
+        calAC = np.vstack((VtAV_vecmat, VtCV_vec)) #following monograph notation 
+        # find symmetric Delta, matrix'ized nullspace(A_v)[:, 0]
+        Delta = create_nullspace_AvCv(calAC) #TODO
         count = count + 1
         
     return X
@@ -181,17 +224,34 @@ class TestSDP:
         return constraints, X_feas
     
         def check_feasibility(self, X):
-            #TBD
+            #TODO
             return
 #%% 
-def check_or_make_pd(X):
+def check_pd(X):
+    #input: a symmetric matrix X
+    #output: 1 or 0, pos_Def or not
+    
     lambda_min = np.min(np.linalg.eigvals(X))
+    if (lambda_min > 0):
+        return 1
+    else: return 0
+       
+#%%         
+def make_pd(X):
+    # input: A real, symmetric matrix X
+    # output: Either the same matirx if it's PD, or a perturbed version which is. 
+    X_evals, X_evecs = np.linalg.eig(X)
+    lambda_min = np.min(X_evals)
     eps = 1e-06
     
     if(lambda_min > 0):
+        print("The matrix is already positive definite")
         return X
     else:
-        return X + np.eye(X.shape[0])*(np.abs(lambda_min) + eps)
+        print("The matrix is NOT positive definite; adding appropriate perturbation")
+        X_mod_evals = X_evals + (X_evals < 0)*(np.abs(lambda_min) + eps)
+        X_mod = X_evecs.dot(np.diag(X_mod_evals).dot(X_evecs.transpose()))
+        return X_mod
 
 #%%
 if __name__ == '__main__':
@@ -200,8 +260,8 @@ if __name__ == '__main__':
     _testsdp_ = TestSDP(n, m)
     _testsdpsol_, _testsdpX_ = sdp(_testsdp_)
     A_cat = np.vstack(_testsdp_.constraints.A[i] for i in range(m))
-    pdfied_X = check_or_make_pd(_testsdpX_.value)
+    pdfied_X = make_pd(_testsdpX_.value)
     #_testsdp_.check_feasibility(pdfied_X)
     rred_X = rank_reduction(pdfied_X, A_cat, _testsdp_.objective)
-    
+#    
                 
