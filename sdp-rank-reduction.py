@@ -7,11 +7,6 @@ Created on Thu Jun  6 15:45:03 2019
 """
 # We implement Algorithm 2.1 described in "Low Rank SDPs: Theory and Applications"
 # by Lemon, Man-Cho So, and Ye. 
-#%% NOTES: 
-# TBD 1: test rank reduction with a random sdp (start w/ a matrix 
-# and generate constraints based on that.)
-# NOTE - This is awful- the solver returns a matrix that has a TINY negative eigenvalue!?
-# NOTE 2 - The rank reducer requires Cholesky, whch requires X to be PD, not PSD. Do I just add an eps perturbation?
 #%% Rank reduction alg
 import numpy as np
 import scipy as sp
@@ -29,6 +24,10 @@ def generate_psd(s):
     A = generate_rndsymm(s)
     Apsd = A + s*np.eye(s)
     return Apsd
+
+#%% 
+def check_symm(X, rtol = 1e-03, atol = 1e-03):
+    return np.allclose(X, X.T, rtol=rtol, atol = atol)
     
 #%% Construct the linear operator Av
 def create_Av(A, V):
@@ -104,6 +103,10 @@ def create_nullspace_AvCv(Av):
     # And finally, we reshape it into a matrix
     r = np.int(np.sqrt(r2))
     Delta = np.reshape(delta, (r, r))
+    if (check_symm(Delta)):
+        print("Delta is symmetric!")
+    else:
+        print("Error: Delta not symmetric")
     return Delta
 
 #%% Construct the linear operator Cv = Vt * C * V
@@ -159,6 +162,13 @@ def rank_reduction(X, A, C):
         alpha = -1/lambda_1
         # Construct X = V(I + alpha * Delta)V'
         X = V.dot((I_r + alpha*Delta).dot(V.transpose()))
+        # posdef'ize X
+        X = make_pd(X)
+        if (check_pd(X)):
+            print("PD matrix before Cholesky")
+        else:
+            print("error  in Cholesky")
+            return X
         # Compute Cholesky
         V = np.linalg.cholesky(X)
         # Create the matrices Vt*A[i]*V and Vt*C*V and vectorize and stack
@@ -233,6 +243,7 @@ def check_pd(X):
     
     lambda_min = np.min(np.linalg.eigvals(X))
     if (lambda_min > 0):
+        print("The min eigval is "+str(lambda_min))
         return 1
     else: return 0
        
@@ -242,17 +253,33 @@ def make_pd(X):
     # output: Either the same matirx if it's PD, or a perturbed version which is. 
     X_evals, X_evecs = np.linalg.eig(X)
     lambda_min = np.min(X_evals)
-    eps = 1e-06
+    min_acceptable_val_for_pd = 1e-02
+    eps = 1e-02
     
-    if(lambda_min > 0):
+    if(lambda_min > min_acceptable_val_for_pd):
         print("The matrix is already positive definite")
         return X
     else:
         print("The matrix is NOT positive definite; adding appropriate perturbation")
-        X_mod_evals = X_evals + (X_evals < 0)*(np.abs(lambda_min) + eps)
+        X_mod_evals = X_evals + (X_evals <= min_acceptable_val_for_pd)*(np.abs(lambda_min) + eps)
         X_mod = X_evecs.dot(np.diag(X_mod_evals).dot(X_evecs.transpose()))
         return X_mod
-
+    
+#%% 
+def print_test_outputs(X_true, X_rred, sdp_instance):
+    # First, check if the objectives match.
+    C = sdp_instance.objective
+    A = sdp_instance.constraints.A
+    b = sdp_instance.constraints.b
+    m = sdp_instance.num_constraints
+    
+    obj_val_diff = np.trace(C.dot(X_true)) - np.trace(C.dot(X_rred))
+    print("The difference in objective values of the SDP solution and the rank reduced matrix is ", obj_val_diff)
+    for i in range(m):
+        print("Constraint "+str(i)+" violation: " +str(np.trace(A[i].dot(X_rred)) - b[i]))
+    print("The eigenvalues of the rank reduced matrix are ", np.linalg.eigvals(X_rred))
+    print("The eigenvalues of the original matrix are ", np.linalg.eigvals(X_true))
+    return
 #%%
 if __name__ == '__main__':
     n = 5
@@ -263,5 +290,10 @@ if __name__ == '__main__':
     pdfied_X = make_pd(_testsdpX_.value)
     #_testsdp_.check_feasibility(pdfied_X)
     rred_X = rank_reduction(pdfied_X, A_cat, _testsdp_.objective)
-#    
+    print_test_outputs(_testsdpX_.value, rred_X, _testsdp_)
+    #TODO:
+    # 1. Add make_pd inside rank-reduction alg, so that we can run it for more iters
+    # 2. Do something about the numerical issue of eigvals being too tiny
+    # 3. write the test for comparing rred_X to orig SDP sol : frob norm differences, 
+    #    values of objective, constraints-feasibility, etc (w/ print statements)
                 
